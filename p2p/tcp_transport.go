@@ -3,7 +3,6 @@ package p2p
 import (
 	"fmt"
 	"net"
-	"sync"
 )
 
 // TCPPeer represents the remote node over a TCP established connection.
@@ -23,25 +22,29 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	}
 }
 
-type TCPTransport struct {
-	listenAddress string
-	listener    net.Listener
+
+type TCPTransportOpts struct {
+	ListenAddress    string
 	HandshakeFunc HandshakeFunc
 	Decoder       Decoder
-	mu sync.RWMutex
-	peers map[net.Addr]Peer
+	OnPeer        func(Peer) error
 }
 
-func NewTCPTransport(listenAddr string) *TCPTransport {
+type TCPTransport struct {
+	TCPTransportOpts
+	listener net.Listener
+	rpcch    chan RPC
+}
+func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
-		listenAddress: listenAddr,
-		HandshakeFunc: NOPHandshakeFunc,
+		TCPTransportOpts: opts,
+		rpcch:            make(chan RPC, 1024),
 	}
 }
 
 func (transport *TCPTransport) ListenAndAccept() error{
 	var err error
-	transport.listener,err=net.Listen("tcp",transport.listenAddress)
+	transport.listener,err=net.Listen("tcp",transport.ListenAddress)
 	if err != nil{
       return err
 	}
@@ -66,10 +69,24 @@ func (transport *TCPTransport) handleConnection(connection net.Conn){
 		fmt.Printf("dropping peer connection: %s", err)
 		connection.Close()
 	}()
-	
+
   peer := NewTCPPeer(connection, true)
   if err= transport.HandshakeFunc(peer); err != nil {
 		return
 	}
   fmt.Printf("New connection established with connection %v\n", peer)
+  
+  //Read Loop
+  for {
+		rpc := RPC{}
+		err = transport.Decoder.Decode(connection, &rpc)
+		if err != nil {
+			return
+		}
+
+		rpc.From = connection.RemoteAddr().String()
+        fmt.Printf("Message received%s",rpc.Payload)
+		
+ 
+	}
 }
