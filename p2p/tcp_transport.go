@@ -3,6 +3,7 @@ package p2p
 import (
 	"fmt"
 	"net"
+	"sync"
 )
 
 // TCPPeer represents the remote node over a TCP established connection.
@@ -13,13 +14,19 @@ type TCPPeer struct {
 	// if we dial and retrieve a conn => outbound == true
 	// if we accept and retrieve a conn => outbound == false
 	outbound bool
+	wg *sync.WaitGroup
 }
 
 func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	return &TCPPeer{
 		connection:     conn,
 		outbound: outbound,
+		wg:       &sync.WaitGroup{},
 	}
+}
+
+func (p *TCPPeer) CloseStream() {
+	p.wg.Done()
 }
 
 
@@ -33,14 +40,22 @@ type TCPTransportOpts struct {
 type TCPTransport struct {
 	TCPTransportOpts
 	listener net.Listener
-	rpcch    chan RPC
+	rpcChannel    chan RPC
 }
 func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
 		TCPTransportOpts: opts,
-		rpcch:            make(chan RPC, 1024),
+		rpcChannel:            make(chan RPC, 1024),
 	}
 }
+
+// Consume implements the Tranport interface, which will return read-only channel
+// for reading the incoming messages received from another peer in the network.
+func (transport *TCPTransport) Consume() <-chan RPC {
+	return transport.rpcChannel
+}
+
+
 
 func (transport *TCPTransport) ListenAndAccept() error{
 	var err error
@@ -75,6 +90,12 @@ func (transport *TCPTransport) handleConnection(connection net.Conn){
 		return
 	}
   fmt.Printf("New connection established with connection %v\n", peer)
+
+  if transport.OnPeer != nil {
+		if err = transport.OnPeer(peer); err != nil {
+			return
+		}
+	}
   
   //Read Loop
   for {
@@ -85,6 +106,16 @@ func (transport *TCPTransport) handleConnection(connection net.Conn){
 		}
 
 		rpc.From = connection.RemoteAddr().String()
+
+		if rpc.Stream {
+			peer.wg.Add(1)
+			fmt.Printf("[%s] incoming stream, waiting...\n", connection.RemoteAddr())
+			peer.wg.Wait()
+			fmt.Printf("[%s] stream closed, resuming read loop\n", connection.RemoteAddr())
+			continue
+		}
+
+		transport.rpcChannel <- rpc
         fmt.Printf("Message received%s",rpc.Payload)
 		
  
